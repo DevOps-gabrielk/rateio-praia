@@ -344,14 +344,21 @@ footer.sig{text-align:center;font-family:var(--mono);font-size:11px;color:var(--
     <input class="title" id="title" value="Cupom da Praia" aria-label="Nome do rolê">
   </header>
   <div id="app"></div>
-  <footer class="sig">Tudo fica salvo neste aparelho &middot; nada sobe pra lugar nenhum</footer>
+  <footer class="sig" id="sig">Tudo fica salvo neste aparelho</footer>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.14.1/firebase-app-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.14.1/firebase-database-compat.min.js"></script>
 <script>
 (function(){
 "use strict";
 
-var SEED_V = 3;   /* sobe quando as notas mudam aqui: o aparelho que ainda não foi mexido recebe a versão nova */
+/* Sincronização: a sala é fixa para todo mundo cair no mesmo lugar.
+   Sem FB_CONFIG a página funciona igual a antes, só que sozinha no aparelho. */
+var FB_CONFIG = null;
+var ROOM = "praia-2c1114f2";
+
+var SEED_V = 4;   /* sobe quando as notas mudam aqui: o aparelho que ainda não foi mexido recebe a versão nova */
 var LS_STATE = "cupom-praia.state.v1";
 var LS_ME    = "cupom-praia.me.v1";
 
@@ -451,6 +458,7 @@ function settle(bal){
 function save(){
   try { localStorage.setItem(LS_STATE, JSON.stringify(S)); } catch(e){}
   try { if (me) localStorage.setItem(LS_ME, me); } catch(e){}
+  if (FB.live) { pushBase(); pushPicks(); }
 }
 function load(){
   try { var raw = localStorage.getItem(LS_STATE); if (raw) return JSON.parse(raw); } catch(e){}
@@ -875,22 +883,37 @@ function payerSelect(r, ed){
 }
 
 function renderShare(){
-  var h = '<section class="panel"><div class="panel-head"><h2 class="panel-title">Mandar pro grupo</h2></div><div class="share-steps">';
+  var h = '<section class="panel"><div class="panel-head"><h2 class="panel-title">Mandar pro grupo</h2>' +
+    (FB.live ? '<span class="hint" style="color:var(--good);font-weight:600">sincronizando</span>' : "") +
+    '</div>';
 
+  if (FB.live) {
+    h += '<div class="share-steps">' +
+      '<div class="step"><span class="n">1</span><div class="txt">' +
+        '<span class="lbl">Manda este link no grupo. Cada um abre, escolhe o próprio nome e marca o que foi dele.</span>' +
+        '<div><button class="btn" data-act="share-all">Copiar link do grupo</button></div>' +
+      '</div></div>' +
+      '<div class="step"><span class="n">2</span><div class="txt">' +
+        '<span class="lbl">Não tem passo 2. O que cada um marcar aparece na tela dos outros sozinho, em segundos.</span>' +
+      '</div></div></div>' +
+      '<div class="hint" style="border-top:1px dashed var(--line);padding-top:12px">' +
+      'Cada pessoa só mexe nas próprias marcações, então dois marcando ao mesmo tempo nunca se atrapalham. ' +
+      'Sem conexão, o que você marcar fica guardado e sobe assim que a internet voltar.</div>';
+    return h + '</section>';
+  }
+
+  h += '<div class="share-steps">';
   h += '<div class="step"><span class="n">1</span><div class="txt">' +
     '<span class="lbl">Você manda <b>um link com tudo</b> no grupo. Quem abrir vê as notas já preenchidas.</span>' +
     '<div><button class="btn" data-act="share-all">Copiar link do grupo</button></div></div></div>';
-
   h += '<div class="step"><span class="n">2</span><div class="txt">' +
     '<span class="lbl">Cada um marca os itens que foram dele e clica aqui pra devolver <b>só as marcações dele</b>.</span>' +
     '<div><button class="btn ghost" data-act="share-mine"' + (me && person(me) ? "" : " disabled") + '>' +
       (me && person(me) ? "Copiar minhas marcações" : "Escolha seu nome lá em cima") + '</button></div></div></div>';
-
   h += '<div class="step"><span class="n">3</span><div class="txt">' +
     '<span class="lbl">Você cola aqui o link que cada um devolver. Junto tudo sem bagunçar o que já estava marcado.</span>' +
     '<textarea class="paste" id="inbox" style="min-height:66px" placeholder="Cole aqui o link que seu amigo mandou de volta"></textarea>' +
     '<div><button class="btn plain" data-act="merge">Juntar marcações</button></div></div></div>';
-
   h += '</div><textarea id="manual-link" class="paste" style="display:none;margin-top:4px" readonly aria-label="Link para copiar manualmente"></textarea>';
   h += '<div class="hint" style="border-top:1px dashed var(--line);padding-top:12px">Ninguém precisa de conta nem de aplicativo — é só abrir o link no navegador do celular.</div>';
   return h + '</section>';
@@ -904,6 +927,135 @@ function paint(){
     ? "Exemplo — é assim que vai funcionar"
     : "Acerto de contas · rateio de compras";
   window.scrollTo(0, scroll);
+}
+
+/* ============ sincronização ============ */
+/* O banco guarda duas coisas separadas:
+     base            -> notas, itens, valores, pagadores  (quem edita escreve)
+     picks/<pessoa>  -> só os itens daquela pessoa        (cada um escreve o seu)
+   Como ninguém escreve no espaço de ninguém, duas pessoas marcando ao mesmo
+   tempo nunca se sobrescrevem. */
+
+var FB = { ref:null, live:false, first:true, lastBase:"", lastPicks:"", state:"off" };
+
+function sigText(){
+  var el = document.getElementById("sig");
+  if (!el) return;
+  el.textContent =
+    FB.state === "on"         ? "Sincronizado · todo mundo vê as mesmas marcações" :
+    FB.state === "connecting" ? "Conectando…" :
+    FB.state === "error"      ? "Sem conexão — o que você marcar fica salvo aqui e sobe quando voltar" :
+                                "Tudo fica salvo neste aparelho";
+}
+
+function baseOf(st){
+  return {
+    title: st.title,
+    people: st.people.map(function(p){ return { id:p.id, name:p.name, color:p.color }; }),
+    receipts: st.receipts.map(function(r){
+      return { id:r.id, store:r.store, date:r.date, payer:r.payer, declared:r.declared,
+        items: r.items.map(function(i){
+          return { id:i.id, name:i.name, qty:i.qty, price:i.price };
+        }) };
+    })
+  };
+}
+
+function picksOf(st, pid){
+  var out = [];
+  st.receipts.forEach(function(r){
+    r.items.forEach(function(i){ if ((i.share || []).indexOf(pid) > -1) out.push(i.id); });
+  });
+  return out;
+}
+
+function buildFrom(base, picks){
+  var ns = { v:1, id:S.id, sample:false, seedV:SEED_V, touched:true,
+             title:base.title, people:base.people || [], receipts:[] };
+  (base.receipts || []).forEach(function(r){
+    ns.receipts.push({
+      id:r.id, store:r.store, date:r.date, payer:r.payer, declared:r.declared,
+      items:(r.items || []).map(function(i){
+        var share = [];
+        Object.keys(picks).forEach(function(pid){
+          if ((picks[pid] || []).indexOf(i.id) > -1) share.push(pid);
+        });
+        return { id:i.id, name:i.name, qty:i.qty, price:i.price, share:share };
+      })
+    });
+  });
+  return ns;
+}
+
+function pushBase(){
+  if (!FB.ref) return;
+  var j = JSON.stringify(baseOf(S));
+  if (j === FB.lastBase) return;
+  FB.lastBase = j;
+  FB.ref.child("base").set(j).catch(function(){});
+}
+
+function pushPicks(){
+  if (!FB.ref || !me) return;
+  var j = JSON.stringify(picksOf(S, me));
+  if (j === FB.lastPicks) return;
+  FB.lastPicks = j;
+  FB.ref.child("picks/" + me).set(j).catch(function(){});
+}
+
+function onRemote(snap){
+  var val = snap.val() || {};
+
+  /* banco vazio: o primeiro que chegar semeia com o que tem em mãos */
+  if (!val.base) {
+    FB.state = "on"; FB.live = true; FB.first = false;
+    FB.lastBase = ""; FB.lastPicks = "";
+    pushBase(); pushPicks(); sigText(); paint();
+    return;
+  }
+
+  var base;
+  try { base = JSON.parse(val.base); } catch(e){ return; }
+
+  var picks = {}, raw = val.picks || {};
+  Object.keys(raw).forEach(function(pid){
+    try { picks[pid] = JSON.parse(raw[pid]) || []; } catch(e){ picks[pid] = []; }
+  });
+
+  /* Na primeira conexão o que este aparelho marcou offline vale mais que o
+     que o banco ainda não recebeu — senão o trabalho sumiria ao conectar. */
+  var mineLocal = me ? picksOf(S, me) : [];
+  if (FB.first && me && mineLocal.length && !(picks[me] || []).length) picks[me] = mineLocal;
+
+  var ns = buildFrom(base, picks);
+  FB.lastBase = val.base;
+  if (me) FB.lastPicks = JSON.stringify(picks[me] || []);
+
+  var mudou = JSON.stringify(S.receipts) !== JSON.stringify(ns.receipts) ||
+              JSON.stringify(S.people)   !== JSON.stringify(ns.people)   ||
+              S.title !== ns.title;
+
+  S = ns;
+  FB.state = "on"; FB.live = true;
+  try { localStorage.setItem(LS_STATE, JSON.stringify(S)); } catch(e){}
+
+  if (FB.first && me && mineLocal.length && picks[me] === mineLocal) { FB.lastPicks = ""; pushPicks(); }
+  FB.first = false;
+
+  sigText();
+  if (mudou) paint(); 
+}
+
+function fbInit(){
+  if (!FB_CONFIG || typeof firebase === "undefined") { FB.state = "off"; sigText(); return; }
+  FB.state = "connecting"; sigText();
+  try {
+    firebase.initializeApp(FB_CONFIG);
+    FB.ref = firebase.database().ref("rateios/" + ROOM);
+    FB.ref.on("value", onRemote, function(){ FB.state = "error"; FB.live = false; sigText(); });
+  } catch(e){
+    FB.state = "error"; FB.live = false; sigText();
+  }
 }
 
 /* ============ helpers de mutação ============ */
@@ -959,7 +1111,7 @@ app.addEventListener("click", function(ev){
   }
   if (act === "edit")      { editing[rid] = !editing[rid]; paint(); return; }
   if (act === "filter")    { filter = el.getAttribute("data-f"); paint(); return; }
-  if (act === "setme")     { me = el.getAttribute("data-id"); save(); paint(); return; }
+  if (act === "setme")     { me = el.getAttribute("data-id"); FB.lastPicks = ""; save(); paint(); return; }
   if (act === "clearme")   { me = null; try{ localStorage.removeItem(LS_ME); }catch(e){} paint(); return; }
   if (act === "newme") {
     var np = addPerson(""); np.name = "Eu"; me = np.id; save(); paint();
@@ -1182,6 +1334,8 @@ function boot(){
     if (me && !person(me)) me = null;
     save();
     paint();
+    sigText();
+    fbInit();
   }
 
   if (!found) { start(); return; }
