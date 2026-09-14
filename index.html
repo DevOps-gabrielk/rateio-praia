@@ -347,8 +347,6 @@ footer.sig{text-align:center;font-family:var(--mono);font-size:11px;color:var(--
   <footer class="sig" id="sig">Tudo fica salvo neste aparelho</footer>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.14.1/firebase-app-compat.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.14.1/firebase-database-compat.min.js"></script>
 <script>
 (function(){
 "use strict";
@@ -1046,9 +1044,15 @@ function onRemote(snap){
   if (mudou) paint(); 
 }
 
-function fbInit(){
-  if (!FB_CONFIG || typeof firebase === "undefined") { FB.state = "off"; sigText(); return; }
-  FB.state = "connecting"; sigText();
+function loadScript(src){
+  return new Promise(function(ok, fail){
+    var el = document.createElement("script");
+    el.src = src; el.onload = ok; el.onerror = fail;
+    document.head.appendChild(el);
+  });
+}
+
+function fbConnect(){
   try {
     firebase.initializeApp(FB_CONFIG);
     FB.ref = firebase.database().ref("rateios/" + ROOM);
@@ -1056,6 +1060,18 @@ function fbInit(){
   } catch(e){
     FB.state = "error"; FB.live = false; sigText();
   }
+}
+
+/* O SDK só é baixado se houver configuração — sem ela a página não carrega
+   nada a mais do que precisa. */
+function fbInit(){
+  if (!FB_CONFIG) { FB.state = "off"; sigText(); return; }
+  FB.state = "connecting"; sigText();
+  var cdn = "https://cdnjs.cloudflare.com/ajax/libs/firebase/10.14.1/";
+  loadScript(cdn + "firebase-app-compat.min.js")
+    .then(function(){ return loadScript(cdn + "firebase-database-compat.min.js"); })
+    .then(fbConnect)
+    .catch(function(){ FB.state = "error"; FB.live = false; sigText(); });
 }
 
 /* ============ helpers de mutação ============ */
