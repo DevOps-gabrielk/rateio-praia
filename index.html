@@ -352,8 +352,16 @@ footer.sig{text-align:center;font-family:var(--mono);font-size:11px;color:var(--
 "use strict";
 
 /* Sincronização: a sala é fixa para todo mundo cair no mesmo lugar.
-   Sem FB_CONFIG a página funciona igual a antes, só que sozinha no aparelho. */
-var FB_CONFIG = null;
+   A apiKey do Firebase é pública por definição — quem controla o acesso são as
+   regras do banco, não ela. Enquanto o banco não existir, isto falha em
+   silêncio e a página segue funcionando sozinha no aparelho. */
+var FB_CONFIG = {
+  apiKey: "AIzaSyCnSvKpV24BFSJh3owrFbYw6uPlRxrLIXU",
+  authDomain: "rateio-praia.firebaseapp.com",
+  projectId: "rateio-praia",
+  databaseURL: "https://rateio-praia-default-rtdb.firebaseio.com",
+  appId: "1:487059197401:web:a98fc92dd4d29d8765ddc8"
+};
 var ROOM = "praia-2c1114f2";
 
 var SEED_V = 4;   /* sobe quando as notas mudam aqui: o aparelho que ainda não foi mexido recebe a versão nova */
@@ -934,16 +942,18 @@ function paint(){
    Como ninguém escreve no espaço de ninguém, duas pessoas marcando ao mesmo
    tempo nunca se sobrescrevem. */
 
-var FB = { ref:null, live:false, first:true, lastBase:"", lastPicks:"", state:"off" };
+var FB = { ref:null, live:false, first:true, everOn:false, lastBase:"", lastPicks:"", state:"off" };
 
 function sigText(){
   var el = document.getElementById("sig");
   if (!el) return;
+  /* Um erro antes da primeira conexão bem-sucedida significa que a sincronização
+     ainda não existe — nesse caso a página não tem nada a anunciar. */
   el.textContent =
-    FB.state === "on"         ? "Sincronizado · todo mundo vê as mesmas marcações" :
-    FB.state === "connecting" ? "Conectando…" :
-    FB.state === "error"      ? "Sem conexão — o que você marcar fica salvo aqui e sobe quando voltar" :
-                                "Tudo fica salvo neste aparelho";
+    FB.state === "on"                     ? "Sincronizado · todo mundo vê as mesmas marcações" :
+    FB.state === "connecting" && FB.everOn ? "Reconectando…" :
+    FB.state === "error" && FB.everOn      ? "Sem conexão — o que você marcar fica salvo aqui e sobe quando voltar" :
+                                             "Tudo fica salvo neste aparelho";
 }
 
 function baseOf(st){
@@ -1006,7 +1016,7 @@ function onRemote(snap){
 
   /* banco vazio: o primeiro que chegar semeia com o que tem em mãos */
   if (!val.base) {
-    FB.state = "on"; FB.live = true; FB.first = false;
+    FB.state = "on"; FB.live = true; FB.everOn = true; FB.first = false;
     FB.lastBase = ""; FB.lastPicks = "";
     pushBase(); pushPicks(); sigText(); paint();
     return;
@@ -1034,7 +1044,7 @@ function onRemote(snap){
               S.title !== ns.title;
 
   S = ns;
-  FB.state = "on"; FB.live = true;
+  FB.state = "on"; FB.live = true; FB.everOn = true;
   try { localStorage.setItem(LS_STATE, JSON.stringify(S)); } catch(e){}
 
   if (FB.first && me && mineLocal.length && picks[me] === mineLocal) { FB.lastPicks = ""; pushPicks(); }
