@@ -138,6 +138,12 @@ input,select,textarea{font:inherit;color:inherit}
 .bal.zero .amt{color:var(--faint)}
 .bal .det{font-family:var(--mono);font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
 
+.partial{
+  background:var(--warn-bg);border:1px solid color-mix(in srgb,var(--warn) 32%, transparent);
+  border-radius:10px;padding:11px 13px;font-size:13px;line-height:1.45;
+}
+.partial b{color:var(--warn)}
+
 .transfers{display:flex;flex-direction:column;gap:0}
 .tf{
   display:flex;align-items:center;gap:8px;padding:10px 2px;
@@ -399,7 +405,7 @@ function allItems(){
 
 /* ============ cálculo ============ */
 function compute(){
-  var owes = {}, paid = {}, orphans = 0, total = 0;
+  var owes = {}, paid = {}, orphans = 0, orphanValue = 0, total = 0;
   S.people.forEach(function(p){ owes[p.id] = 0; paid[p.id] = 0; });
 
   S.receipts.forEach(function(r){
@@ -408,7 +414,7 @@ function compute(){
       var t = itemTotal(it);
       sum += t;
       var sh = (it.share || []).filter(function(id){ return person(id); });
-      if (!sh.length) { orphans++; return; }
+      if (!sh.length) { orphans++; orphanValue += t; return; }
       var part = t / sh.length;
       sh.forEach(function(id){ owes[id] += part; });
     });
@@ -418,7 +424,7 @@ function compute(){
 
   var bal = {};
   S.people.forEach(function(p){ bal[p.id] = paid[p.id] - owes[p.id]; });
-  return { owes:owes, paid:paid, bal:bal, orphans:orphans, total:total };
+  return { owes:owes, paid:paid, bal:bal, orphans:orphans, orphanValue:orphanValue, total:total };
 }
 
 function settle(bal){
@@ -688,6 +694,14 @@ function renderSettle(c){
   var h = '<section class="panel"><div class="panel-head"><h2 class="panel-title">O acerto</h2>' +
     (S.sample ? '<span class="seal sm">exemplo</span>' : "") +
     '<span class="hint" style="font-family:var(--mono)">' + brl(c.total) + ' em ' + S.receipts.length + ' nota' + (S.receipts.length === 1 ? "" : "s") + '</span></div>';
+
+  if (c.orphans) {
+    h += '<div class="partial">' +
+      '<b>Esta conta ainda não fechou.</b> Faltam ' + brl(c.orphanValue) + ' em ' + c.orphans +
+      (c.orphans === 1 ? ' item que ninguém marcou' : ' itens que ninguém marcou') + '. ' +
+      'Até lá os números abaixo enganam: a dívida toda cai em quem pagou mais, e quem pagou menos aparece sem receber nada.' +
+    '</div>';
+  }
 
   h += '<div class="balances">' + S.people.map(function(p){
     var v = c.bal[p.id] || 0;
