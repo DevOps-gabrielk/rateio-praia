@@ -942,7 +942,7 @@ function paint(){
    Como ninguém escreve no espaço de ninguém, duas pessoas marcando ao mesmo
    tempo nunca se sobrescrevem. */
 
-var FB = { ref:null, live:false, first:true, everOn:false, lastBase:"", lastPicks:"", state:"off" };
+var FB = { ref:null, live:false, first:true, everOn:false, lastBase:"", lastAll:{}, state:"off" };
 
 function sigText(){
   var el = document.getElementById("sig");
@@ -1003,12 +1003,20 @@ function pushBase(){
   FB.ref.child("base").set(j).catch(function(){});
 }
 
+/* Publica TODO pick que mudou, não só o meu: o botão "todos" mexe nas sete
+   pessoas de uma vez, e a carga inicial traz o rateio da comida já marcado.
+   Escrever por diferença mantém intacto o pick de quem não mudou. */
 function pushPicks(){
-  if (!FB.ref || !me) return;
-  var j = JSON.stringify(picksOf(S, me));
-  if (j === FB.lastPicks) return;
-  FB.lastPicks = j;
-  FB.ref.child("picks/" + me).set(j).catch(function(){});
+  if (!FB.ref) return;
+  var upd = {};
+  S.people.forEach(function(p){
+    var j = JSON.stringify(picksOf(S, p.id));
+    if (FB.lastAll[p.id] === j) return;
+    if (FB.lastAll[p.id] === undefined && j === "[]") return;  /* nada a dizer ainda */
+    upd[p.id] = j;
+    FB.lastAll[p.id] = j;
+  });
+  if (Object.keys(upd).length) FB.ref.child("picks").update(upd).catch(function(){});
 }
 
 function onRemote(snap){
@@ -1017,7 +1025,7 @@ function onRemote(snap){
   /* banco vazio: o primeiro que chegar semeia com o que tem em mãos */
   if (!val.base) {
     FB.state = "on"; FB.live = true; FB.everOn = true; FB.first = false;
-    FB.lastBase = ""; FB.lastPicks = "";
+    FB.lastBase = ""; FB.lastAll = {};
     pushBase(); pushPicks(); sigText(); paint();
     return;
   }
@@ -1037,7 +1045,8 @@ function onRemote(snap){
 
   var ns = buildFrom(base, picks);
   FB.lastBase = val.base;
-  if (me) FB.lastPicks = JSON.stringify(picks[me] || []);
+  FB.lastAll = {};
+  ns.people.forEach(function(p){ FB.lastAll[p.id] = JSON.stringify(picks[p.id] || []); });
 
   var mudou = JSON.stringify(S.receipts) !== JSON.stringify(ns.receipts) ||
               JSON.stringify(S.people)   !== JSON.stringify(ns.people)   ||
@@ -1047,7 +1056,7 @@ function onRemote(snap){
   FB.state = "on"; FB.live = true; FB.everOn = true;
   try { localStorage.setItem(LS_STATE, JSON.stringify(S)); } catch(e){}
 
-  if (FB.first && me && mineLocal.length && picks[me] === mineLocal) { FB.lastPicks = ""; pushPicks(); }
+  if (FB.first && me && mineLocal.length && picks[me] === mineLocal) { delete FB.lastAll[me]; pushPicks(); }
   FB.first = false;
 
   sigText();
@@ -1137,7 +1146,7 @@ app.addEventListener("click", function(ev){
   }
   if (act === "edit")      { editing[rid] = !editing[rid]; paint(); return; }
   if (act === "filter")    { filter = el.getAttribute("data-f"); paint(); return; }
-  if (act === "setme")     { me = el.getAttribute("data-id"); FB.lastPicks = ""; save(); paint(); return; }
+  if (act === "setme")     { me = el.getAttribute("data-id"); save(); paint(); return; }
   if (act === "clearme")   { me = null; try{ localStorage.removeItem(LS_ME); }catch(e){} paint(); return; }
   if (act === "newme") {
     var np = addPerson(""); np.name = "Eu"; me = np.id; save(); paint();
