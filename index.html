@@ -152,6 +152,31 @@ input,select,textarea{font:inherit;color:inherit}
 .tf:first-child{border-top:0}
 .tf .arrow{color:var(--faint);font-family:var(--mono)}
 .tf .val{margin-left:auto;font-family:var(--mono);font-weight:700;font-variant-numeric:tabular-nums}
+.pixgrupo{
+  border:1px solid var(--line);border-radius:12px;padding:13px 14px;
+  display:flex;flex-direction:column;gap:1px;
+}
+.pixhead{display:flex;align-items:center;gap:9px;padding-bottom:9px;border-bottom:1px dashed var(--line);margin-bottom:5px}
+.pixtit{display:flex;flex-direction:column;gap:1px;min-width:0}
+.pixtit b{font-size:15.5px;letter-spacing:-.01em}
+.pixsub{font-family:var(--mono);font-size:11px;color:var(--faint)}
+.pixlinha{
+  display:flex;align-items:center;gap:8px;padding:7px 6px;border-radius:7px;
+  font-size:14.5px;
+}
+.pixlinha .val{margin-left:auto;font-family:var(--mono);font-weight:700;font-size:15px;font-variant-numeric:tabular-nums}
+.pixlinha.eu{background:var(--sunk);font-weight:600}
+.euflag{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--accent-ink);background:var(--accent);border-radius:4px;padding:2px 6px;
+}
+.pixtotal{
+  display:flex;justify-content:space-between;align-items:baseline;gap:10px;
+  border-top:1px dashed var(--line);margin-top:6px;padding-top:9px;font-size:13.5px;
+}
+.pixtotal b{font-family:var(--mono);font-size:17px;font-weight:700;color:var(--good);font-variant-numeric:tabular-nums}
+.pixnota{font-size:12px;color:var(--faint);padding-top:5px;line-height:1.4}
+
 .tf.mine{background:var(--sunk);border-radius:6px;padding-left:8px;padding-right:8px}
 .meubloco{
   border:1px solid var(--accent);border-radius:10px;padding:12px 13px;
@@ -464,6 +489,37 @@ function compute(){
 /* Cada dívida aparece inteira, sem abater a de volta: se você consumiu R$ 115
    da nota de alguém e ele consumiu R$ 25 da sua, são dois valores, não um
    saldo. Mais transferências, porém cada uma dá pra conferir no cupom. */
+/* Agrupa por quem passou o cartão: um bloco por pagador, com o que cada
+   pessoa deve pagar para ele. As notas do mesmo pagador entram juntas, então
+   cada um faz um PIX só por credor. */
+function pixPorPagador(){
+  var grupos = [], idx = {};
+  S.receipts.forEach(function(r){
+    if (!r.payer || !person(r.payer)) return;
+    var g = idx[r.payer];
+    if (!g) { g = idx[r.payer] = { payer:r.payer, notas:[], dev:{}, propria:0, total:0 }; grupos.push(g); }
+    g.notas.push(r.date || r.store);
+    r.items.forEach(function(it){
+      var sh = (it.share || []).filter(person);
+      if (!sh.length) return;
+      var t = itemTotal(it), parte = t / sh.length;
+      g.total += t;
+      sh.forEach(function(pid){
+        if (pid === r.payer) g.propria += parte;
+        else g.dev[pid] = (g.dev[pid] || 0) + parte;
+      });
+    });
+  });
+  grupos.forEach(function(g){
+    g.linhas = Object.keys(g.dev)
+      .filter(function(pid){ return person(pid) && g.dev[pid] >= 0.005; })
+      .map(function(pid){ return { pid:pid, valor:g.dev[pid] }; })
+      .sort(function(a, b){ return b.valor - a.valor; });
+    g.receber = g.linhas.reduce(function(a, l){ return a + l.valor; }, 0);
+  });
+  return grupos.sort(function(a, b){ return b.receber - a.receber; });
+}
+
 function settleByPayer(){
   var owe = {};
   S.people.forEach(function(a){ owe[a.id] = {}; S.people.forEach(function(b){ owe[a.id][b.id] = 0; }); });
@@ -784,57 +840,48 @@ function renderSettle(c){
       '.</b> Sem saber quem passou o cartão não dá para dizer quem devolve para quem.</div>';
   }
 
-  var lista = modo === "payer" ? settleByPayer() : tf;
-
-  h += '<div class="filters" style="margin-bottom:-4px">' +
-    '<button data-act="modo" data-m="payer" aria-pressed="' + (modo === "payer") + '">Devolver a quem pagou</button>' +
-    '<button data-act="modo" data-m="min" aria-pressed="' + (modo === "min") + '">Menos transferências<span class="count">' + tf.length + '</span></button>' +
+  h += '<div class="filters" style="margin-bottom:-2px">' +
+    '<button data-act="modo" data-m="payer" aria-pressed="' + (modo === "payer") + '">Quem paga pra quem</button>' +
+    '<button data-act="modo" data-m="min" aria-pressed="' + (modo === "min") + '">Menos PIX<span class="count">' + tf.length + '</span></button>' +
   '</div>';
 
-  function linha(t, destaque){
-    var a = person(t.from), b = person(t.to);
-    if (!a || !b) return "";
-    return '<div class="tf' + (destaque ? " mine" : "") + '">' +
-      '<span class="av" style="--c:' + a.color + '">' + esc(initials(a.name)) + '</span><b>' + esc(a.name) + '</b>' +
-      '<span class="arrow">→</span>' +
-      '<span class="av" style="--c:' + b.color + '">' + esc(initials(b.name)) + '</span><b>' + esc(b.name) + '</b>' +
-      '<span class="val">' + brl(t.amount) + '</span></div>';
-  }
-
-  if (me && person(me)) {
-    var recebe = lista.filter(function(t){ return t.to === me; });
-    var paga   = lista.filter(function(t){ return t.from === me; });
-    if (recebe.length || paga.length) {
-      var somaR = recebe.reduce(function(a, t){ return a + t.amount; }, 0);
-      var somaP = paga.reduce(function(a, t){ return a + t.amount; }, 0);
-      h += '<div class="meubloco"><div class="meutit">O seu lado</div>';
-      if (paga.length) {
-        h += '<div class="meulinha"><span>Você paga</span><b class="neg">' + brl(somaP) + '</b></div>';
-        h += paga.map(function(t){
-          var b2 = person(t.to);
-          return '<div class="meuitem"><span class="av" style="--c:' + b2.color + '">' + esc(initials(b2.name)) + '</span>' +
-                 'para ' + esc(b2.name) + '<span class="val">' + brl(t.amount) + '</span></div>';
-        }).join("");
-      }
-      if (recebe.length) {
-        h += '<div class="meulinha"><span>Você recebe</span><b class="pos">' + brl(somaR) + '</b></div>';
-        h += recebe.map(function(t){
-          var a2 = person(t.from);
-          return '<div class="meuitem"><span class="av" style="--c:' + a2.color + '">' + esc(initials(a2.name)) + '</span>' +
-                 'de ' + esc(a2.name) + '<span class="val">' + brl(t.amount) + '</span></div>';
-        }).join("");
-      }
-      h += '<div class="meulinha total"><span>Sobra pra você</span><b class="' + (somaR - somaP >= 0 ? "pos" : "neg") + '">' +
-           (somaR - somaP >= 0 ? "+" : "−") + brl(Math.abs(somaR - somaP)) + '</b></div>';
-      h += '</div>';
+  if (modo === "payer") {
+    var grupos = pixPorPagador();
+    if (!grupos.length) {
+      h += '<div class="settled">Defina quem pagou cada nota para ver os PIX.</div>';
     }
-  }
-
-  if (!lista.length) {
+    grupos.forEach(function(g){
+      var dono = person(g.payer);
+      h += '<div class="pixgrupo">' +
+        '<div class="pixhead">' +
+          '<span class="av" style="--c:' + dono.color + '">' + esc(initials(dono.name)) + '</span>' +
+          '<div class="pixtit"><b>PIX para ' + esc(dono.name) + '</b>' +
+          '<span class="pixsub">' + esc(g.notas.join(" + ")) + ' &middot; ' + brl(g.total) + ' no cartão dele</span></div>' +
+        '</div>';
+      h += g.linhas.map(function(l){
+        var q = person(l.pid);
+        return '<div class="pixlinha' + (l.pid === me ? " eu" : "") + '">' +
+          '<span class="av" style="--c:' + q.color + '">' + esc(initials(q.name)) + '</span>' +
+          esc(q.name) + (l.pid === me ? ' <span class="euflag">você</span>' : "") +
+          '<span class="val">' + brl(l.valor) + '</span></div>';
+      }).join("");
+      h += '<div class="pixtotal"><span>' + esc(dono.name) + ' recebe</span><b>' + brl(g.receber) + '</b></div>';
+      if (g.propria >= 0.005) {
+        h += '<div class="pixnota">A parte dele nessa nota foi ' + brl(g.propria) + ' — essa ele não recebe de ninguém.</div>';
+      }
+      h += '</div>';
+    });
+  } else if (!tf.length) {
     h += '<div class="settled">Ninguém deve nada a ninguém.</div>';
   } else {
-    h += '<div class="transfers">' + lista.map(function(t){
-      return linha(t, me && (t.from === me || t.to === me));
+    h += '<div class="transfers">' + tf.map(function(t){
+      var a = person(t.from), b = person(t.to);
+      if (!a || !b) return "";
+      return '<div class="tf' + (me && (t.from === me || t.to === me) ? " mine" : "") + '">' +
+        '<span class="av" style="--c:' + a.color + '">' + esc(initials(a.name)) + '</span><b>' + esc(a.name) + '</b>' +
+        '<span class="arrow">→</span>' +
+        '<span class="av" style="--c:' + b.color + '">' + esc(initials(b.name)) + '</span><b>' + esc(b.name) + '</b>' +
+        '<span class="val">' + brl(t.amount) + '</span></div>';
     }).join("") + '</div>';
   }
 
