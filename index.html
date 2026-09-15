@@ -152,6 +152,26 @@ input,select,textarea{font:inherit;color:inherit}
 .tf:first-child{border-top:0}
 .tf .arrow{color:var(--faint);font-family:var(--mono)}
 .tf .val{margin-left:auto;font-family:var(--mono);font-weight:700;font-variant-numeric:tabular-nums}
+.tf.mine{background:var(--sunk);border-radius:6px;padding-left:8px;padding-right:8px}
+.meubloco{
+  border:1px solid var(--accent);border-radius:10px;padding:12px 13px;
+  display:flex;flex-direction:column;gap:3px;
+}
+.meutit{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--accent);font-weight:700;padding-bottom:5px;
+}
+.meulinha{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:14px;padding-top:7px}
+.meulinha b{font-family:var(--mono);font-size:17px;font-variant-numeric:tabular-nums}
+.meulinha.total{border-top:1px dashed var(--line);margin-top:7px;font-weight:600}
+.meulinha .pos{color:var(--good)}
+.meulinha .neg{color:var(--bad)}
+.meuitem{
+  display:flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);
+  padding:3px 0 3px 2px;
+}
+.meuitem .val{margin-left:auto;font-family:var(--mono);color:var(--ink);font-variant-numeric:tabular-nums}
+
 .settled{font-family:var(--mono);font-size:13px;color:var(--good);text-align:center;padding:8px}
 
 /* ---------- progresso ---------- */
@@ -373,6 +393,7 @@ var COLORS = ["#0E7168","#C9752A","#4A6FA5","#9C4A6E","#5B8C3E","#7A5AA8","#B843
 var S = null;          /* estado do rolê */
 var me = null;         /* id da pessoa neste aparelho */
 var filter = "all";
+var modo = "payer";   /* "payer" = devolve a quem pagou · "min" = menos transferências */
 var editing = {};      /* receiptId -> bool */
 var app = document.getElementById("app");
 var titleEl = document.getElementById("title");
@@ -438,6 +459,35 @@ function compute(){
   var bal = {};
   S.people.forEach(function(p){ bal[p.id] = paid[p.id] - owes[p.id]; });
   return { owes:owes, paid:paid, bal:bal, orphans:orphans, orphanValue:orphanValue, total:total };
+}
+
+/* Cada dívida aparece inteira, sem abater a de volta: se você consumiu R$ 115
+   da nota de alguém e ele consumiu R$ 25 da sua, são dois valores, não um
+   saldo. Mais transferências, porém cada uma dá pra conferir no cupom. */
+function settleByPayer(){
+  var owe = {};
+  S.people.forEach(function(a){ owe[a.id] = {}; S.people.forEach(function(b){ owe[a.id][b.id] = 0; }); });
+
+  S.receipts.forEach(function(r){
+    if (!r.payer || !person(r.payer)) return;
+    r.items.forEach(function(it){
+      var sh = (it.share || []).filter(person);
+      if (!sh.length) return;
+      var parte = itemTotal(it) / sh.length;
+      sh.forEach(function(pid){ if (pid !== r.payer) owe[pid][r.payer] += parte; });
+    });
+  });
+
+  var out = [];
+  S.people.forEach(function(a){
+    S.people.forEach(function(b){
+      if (a.id === b.id) return;
+      var v = Math.round(owe[a.id][b.id] * 100) / 100;
+      if (v >= 0.005) out.push({ from:a.id, to:b.id, amount:v });
+    });
+  });
+  out.sort(function(x, y){ return y.amount - x.amount; });
+  return out;
 }
 
 function settle(bal){
@@ -727,17 +777,64 @@ function renderSettle(c){
     '</div>';
   }).join("") + '</div>';
 
-  if (!tf.length) {
+  var semPagador = S.receipts.filter(function(r){ return !r.payer || !person(r.payer); });
+  if (semPagador.length) {
+    h += '<div class="partial"><b>' + semPagador.length +
+      (semPagador.length === 1 ? ' nota está sem pagador' : ' notas estão sem pagador') +
+      '.</b> Sem saber quem passou o cartão não dá para dizer quem devolve para quem.</div>';
+  }
+
+  var lista = modo === "payer" ? settleByPayer() : tf;
+
+  h += '<div class="filters" style="margin-bottom:-4px">' +
+    '<button data-act="modo" data-m="payer" aria-pressed="' + (modo === "payer") + '">Devolver a quem pagou</button>' +
+    '<button data-act="modo" data-m="min" aria-pressed="' + (modo === "min") + '">Menos transferências<span class="count">' + tf.length + '</span></button>' +
+  '</div>';
+
+  function linha(t, destaque){
+    var a = person(t.from), b = person(t.to);
+    if (!a || !b) return "";
+    return '<div class="tf' + (destaque ? " mine" : "") + '">' +
+      '<span class="av" style="--c:' + a.color + '">' + esc(initials(a.name)) + '</span><b>' + esc(a.name) + '</b>' +
+      '<span class="arrow">→</span>' +
+      '<span class="av" style="--c:' + b.color + '">' + esc(initials(b.name)) + '</span><b>' + esc(b.name) + '</b>' +
+      '<span class="val">' + brl(t.amount) + '</span></div>';
+  }
+
+  if (me && person(me)) {
+    var recebe = lista.filter(function(t){ return t.to === me; });
+    var paga   = lista.filter(function(t){ return t.from === me; });
+    if (recebe.length || paga.length) {
+      var somaR = recebe.reduce(function(a, t){ return a + t.amount; }, 0);
+      var somaP = paga.reduce(function(a, t){ return a + t.amount; }, 0);
+      h += '<div class="meubloco"><div class="meutit">O seu lado</div>';
+      if (paga.length) {
+        h += '<div class="meulinha"><span>Você paga</span><b class="neg">' + brl(somaP) + '</b></div>';
+        h += paga.map(function(t){
+          var b2 = person(t.to);
+          return '<div class="meuitem"><span class="av" style="--c:' + b2.color + '">' + esc(initials(b2.name)) + '</span>' +
+                 'para ' + esc(b2.name) + '<span class="val">' + brl(t.amount) + '</span></div>';
+        }).join("");
+      }
+      if (recebe.length) {
+        h += '<div class="meulinha"><span>Você recebe</span><b class="pos">' + brl(somaR) + '</b></div>';
+        h += recebe.map(function(t){
+          var a2 = person(t.from);
+          return '<div class="meuitem"><span class="av" style="--c:' + a2.color + '">' + esc(initials(a2.name)) + '</span>' +
+                 'de ' + esc(a2.name) + '<span class="val">' + brl(t.amount) + '</span></div>';
+        }).join("");
+      }
+      h += '<div class="meulinha total"><span>Sobra pra você</span><b class="' + (somaR - somaP >= 0 ? "pos" : "neg") + '">' +
+           (somaR - somaP >= 0 ? "+" : "−") + brl(Math.abs(somaR - somaP)) + '</b></div>';
+      h += '</div>';
+    }
+  }
+
+  if (!lista.length) {
     h += '<div class="settled">Ninguém deve nada a ninguém.</div>';
   } else {
-    h += '<div class="transfers">' + tf.map(function(t){
-      var a = person(t.from), b = person(t.to);
-      if (!a || !b) return "";
-      return '<div class="tf">' +
-        '<span class="av" style="--c:' + a.color + '">' + esc(initials(a.name)) + '</span><b>' + esc(a.name) + '</b>' +
-        '<span class="arrow">→</span>' +
-        '<span class="av" style="--c:' + b.color + '">' + esc(initials(b.name)) + '</span><b>' + esc(b.name) + '</b>' +
-        '<span class="val">' + brl(t.amount) + '</span></div>';
+    h += '<div class="transfers">' + lista.map(function(t){
+      return linha(t, me && (t.from === me || t.to === me));
     }).join("") + '</div>';
   }
 
@@ -1146,6 +1243,7 @@ app.addEventListener("click", function(ev){
   }
   if (act === "edit")      { editing[rid] = !editing[rid]; paint(); return; }
   if (act === "filter")    { filter = el.getAttribute("data-f"); paint(); return; }
+  if (act === "modo")      { modo = el.getAttribute("data-m"); paint(); return; }
   if (act === "setme")     { me = el.getAttribute("data-id"); save(); paint(); return; }
   if (act === "clearme")   { me = null; try{ localStorage.removeItem(LS_ME); }catch(e){} paint(); return; }
   if (act === "newme") {
